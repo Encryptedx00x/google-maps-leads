@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+# Resultados e planilhas (podem conter dados reais)
+*.xlsx
+*.xls
+*.csv
