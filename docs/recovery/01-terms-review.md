@@ -11,3 +11,5 @@ Status: **PENDENTE** until a compliant acquisition source is selected. No Seleni
 Sources reviewed 2026-11-04:
 - https://www.google.com/help/terms_maps/ (end-user terms; copying and mass-download restrictions)
 - https://cloud.google.com/maps-platform/terms (Platform section 3.2.3(a), no scraping/copying business names and addresses)
+
+PR de checkpoint: https://github.com/Encryptedx00x/google-maps-leads/pull/1 (rascunho aberto e mergeável). Commit: 34b95b2fdb3b4d290e81d6665e718fbd05619ff2.
