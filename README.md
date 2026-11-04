@@ -1,42 +1,22 @@
-# Prospecção automática no Google Maps
+# Google Maps Leads (recuperação pendente)
 
-Ferramenta em Python que automatiza a busca de estabelecimentos no Google Maps a partir de
-palavras-chave e cidades, e exporta os resultados (nome, telefone, tipo e endereço) para uma
-planilha Excel. Útil para montar listas de prospecção comercial a partir de dados públicos.
+Este repositório contém um protótipo antigo de Selenium que pesquisa no Google Maps, copia listagens de empresas e as grava em Excel. **Não execute o coletor atual.** A coleta/exportação pretendida não foi validada como compatível com os termos atuais do serviço.
 
-## Como funciona
+## Estado da coleta
 
-1. Abre o Google Maps no navegador (Selenium + Chrome).
-2. Para cada combinação de **palavra-chave × cidade**, pesquisa e lê os resultados visíveis.
-3. Extrai nome, telefone (quando exibido), tipo de estabelecimento e endereço.
-4. Salva tudo em um arquivo `.xlsx` com nome único.
+Os [termos adicionais do Google Maps](https://www.google.com/help/terms_maps/) proíbem copiar conteúdo e criar downloads em massa. Os [termos do Google Maps Platform](https://cloud.google.com/maps-platform/terms) também proíbem scraping e copiar/salvar nomes e endereços de empresas fora dos serviços. Uma API oficial não autoriza automaticamente exportar esses dados para uma planilha.
 
-## Requisitos
+Para retomar o projeto, substitua a origem por um provedor ou conjunto de dados cuja licença permita expressamente a extração e a exportação pretendidas. Até lá, a busca real está pendente. Nenhuma consulta ao Google Maps foi executada nesta recuperação.
 
-- Python 3.10+
-- Google Chrome instalado
-- Dependências: `pip install -r requirements.txt`
-  (o driver do Chrome é baixado automaticamente pelo `webdriver-manager`)
+## Estado técnico conhecido
 
-## Como usar
+- O script usa seletores internos sujeitos a mudanças e não implementa rolagem/paginação confiável.
+- A execução começa durante a importação do arquivo Python, abrindo prompts e inicializando o navegador.
+- A saída XLSX ainda não foi validada quanto a duplicatas, conteúdo interpretado como fórmula ou abertura em leitores de planilha.
+- As dependências não têm lockfile nem testes automatizados.
 
-```bash
-python scraper_google_maps.py
-```
-
-O script pergunta se você quer usar as **cidades** e as **palavras-chave** padrão (exemplo do
-ramo de logística em Santa Catarina) ou digitar as suas, separadas por vírgula. Para mudar os
-padrões, edite as listas `termos_busca_padrao` e `cidades_padrao` no fim do arquivo.
-
-## Limitações conhecidas
-
-- Lê apenas os primeiros resultados carregados de cada busca (não rola a lista automaticamente).
-- Depende dos nomes internos de classe do Google Maps, que mudam com frequência e podem exigir ajuste nos seletores.
-- É uma ferramenta de automação de navegador, não a API oficial do Google.
+Esses pontos deverão ser tratados após a escolha de uma origem de dados permitida. Não foi feita atualização de Selenium nem ajustes nos seletores porque isso operacionalizaria a extração de listagens do Maps.
 
 ## Uso responsável
 
-Use apenas para fins legítimos de prospecção, respeitando os
-[Termos de Serviço do Google](https://policies.google.com/terms) e a legislação de proteção de
-dados (LGPD). Os dados coletados são públicos; trate-os com responsabilidade e não os utilize
-para spam ou qualquer finalidade abusiva.
+Use apenas fontes e dados que você tenha autorização para coletar e exportar. Dados disponíveis publicamente não estão automaticamente liberados para cópia ou criação de listas. Respeite os termos do provedor, a legislação de proteção de dados (LGPD) e não utilize dados para spam ou finalidade abusiva.
