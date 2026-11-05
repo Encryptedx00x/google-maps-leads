@@ -31,7 +31,7 @@ python scraper_google_maps.py `
 
 `--cities` e `--terms` aceitam listas separadas por vírgulas. `--max-results` é um limite global por execução, de 1 a 50. Se o arquivo de saída já existir, o programa escolhe um nome com sufixo numérico; use `--overwrite` para substituir deliberadamente. Sem argumentos, usa termos e cidades de exemplo definidos no script.
 
-O navegador aguarda a caixa de pesquisa e o painel de resultados por condições explícitas. A lista rola até atingir o limite ou deixar de carregar novos cartões. Os resultados são deduplicados por nome/endereço/cidade. Tipo, endereço e telefone ficam em branco quando a interface não expõe um rótulo reconhecível. Dados iniciados por caracteres que planilhas tratam como fórmula são gravados como texto.
+O navegador aguarda a caixa de pesquisa e o painel de resultados por condições explícitas. A lista rola até atingir o limite ou deixar de carregar novos cartões. A deduplicação usa a URL do lugar e, quando disponível, nome/endereço/cidade; filiais sem endereço não são fundidas apenas pelo nome. Tipo, endereço e telefone ficam em branco quando a interface não expõe um rótulo reconhecível. Caracteres de controle inválidos são removidos do XLSX e valores que poderiam virar fórmula são gravados como texto.
 
 ## Validação real desta revisão
 
@@ -44,10 +44,19 @@ python -m unittest discover -s tests -v
 
 Os testes usam cartões sintéticos e não navegam até o Google Maps. Uma busca real pequena depende da disponibilidade da interface e da rede; se a página solicitar intervenção humana, o programa encerra sem tentar contorná-la.
 
+Para validar seletores, rolagem e exportação com Chrome real somente contra uma fixture localhost:
+
+```powershell
+$env:MAPS_BROWSER_FIXTURE = '1'
+python -m unittest discover -s tests -p test_browser_fixture.py -v
+```
+
+A auditoria final verificou 15 testes locais e essa integração Chrome. Não repetiu a coleta real nem homologa seletores atuais do site. Evidências em `docs/recovery/03-final-audit.md`.
+
 ## Limitações da PoC
 
 - A interface interna do Maps pode mudar; seletores e rótulos acessíveis podem deixar de corresponder.
 - Os campos disponíveis variam entre estabelecimentos e resultados.
 - O protótipo lê resultados visíveis do site e não oferece garantia de cobertura, precisão ou estabilidade.
-- Os termos de uso do provedor podem restringir extração, armazenamento e exportação. Este projeto não representa uma integração oficial nem uma avaliação de conformidade; revise as condições aplicáveis ao seu uso antes de operar.
+- Os [termos adicionais do Maps](https://www.google.com/help/terms_maps/) restringem cópia de conteúdo, salvo permissões/exceções aplicáveis, e downloads em massa. Não foi demonstrada uma permissão específica para a extração/exportação desta PoC. A auditoria técnica não declara conformidade nem autoriza uso comercial da fonte.
 - Não grave arquivos de resultados no Git. `.xlsx` está ignorado pelo repositório.

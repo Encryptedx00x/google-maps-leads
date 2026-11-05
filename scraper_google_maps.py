@@ -8,10 +8,11 @@ import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -81,21 +82,31 @@ def _element_text(driver, selectors: tuple[str, ...]) -> str:
         for element in driver.find_elements(By.CSS_SELECTOR, selector):
             value = (element.get_attribute("aria-label") or element.text or "").strip()
             if value:
-                return value.split(":", 1)[-1].strip() if ":" in value else value
+                return value
     return ""
+
+
+def _raise_if_intervention_required(driver) -> None:
+    body = ' '.join(element.text for element in driver.find_elements(By.TAG_NAME, 'body'))
+    current_url = getattr(driver, 'current_url', '') or ''
+    if '/sorry/' in current_url or driver.find_elements(By.CSS_SELECTOR, '#captcha-form, form[action*="/sorry/"]') or re.search(
+        r'our systems have detected unusual traffic|unusual traffic from your computer|automated queries|tráfego incomum|prove que você é humano', body, re.IGNORECASE
+    ):
+        raise RuntimeError('O Maps pediu intervenção humana; a PoC encerrou sem tentar contornar o bloqueio.')
 
 
 def enriquecer_empresa(driver, business: Business, timeout: int = 10) -> Business:
     """Read public labels from a result's Maps details panel/page, without interacting with controls."""
     driver.get(business.maps_url)
     try:
+        def ready(browser):
+            _raise_if_intervention_required(browser)
+            return browser.find_elements(By.CSS_SELECTOR, 'h1')
         WebDriverWait(driver, timeout).until(
-            lambda browser: browser.find_elements(By.CSS_SELECTOR, "h1")
+            ready
         )
     except TimeoutException:
-        body = " ".join(element.text for element in driver.find_elements(By.TAG_NAME, "body"))
-        if re.search(r"captcha|unusual traffic|automated queries|tráfego incomum|prove que você é humano", body, re.IGNORECASE):
-            raise RuntimeError("O Maps pediu intervenção humana; a PoC encerrou sem tentar contornar o bloqueio.")
+        _raise_if_intervention_required(driver)
         return business
 
     labels = [
@@ -167,14 +178,25 @@ def extrair_empresa(card, cidade: str, termo_busca: str) -> Business | None:
     )
 
 
+def _dedupe_keys(business: Business) -> list[tuple[str, ...]]:
+    parsed = urlparse(business.maps_url.strip())
+    tracking = {'entry', 'g_ep', 'g_st', 'hl', 'authuser'}
+    query = urlencode(sorted((k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k not in tracking and not k.startswith('utm_')))
+    canonical = urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip('/'), parsed.params, query, ''))
+    keys = [('url', canonical)] if canonical else []
+    if _normalizar(business.address):
+        keys.append(('address', _normalizar(business.name), _normalizar(business.address), _normalizar(business.city)))
+    return keys
+
+
 def deduplicar_empresas(empresas: Iterable[Business]) -> list[Business]:
     unique: list[Business] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, ...]] = set()
     for business in empresas:
-        key = (_normalizar(business.name), _normalizar(business.address), _normalizar(business.city))
-        if key in seen:
+        keys = _dedupe_keys(business)
+        if any(key in seen for key in keys):
             continue
-        seen.add(key)
+        seen.update(keys)
         unique.append(business)
     return unique
 
@@ -194,6 +216,7 @@ def encontrar_caixa_pesquisa(driver, wait: WebDriverWait):
     )
 
     def visible_input(browser):
+        _raise_if_intervention_required(browser)
         for locator in locators:
             for element in browser.find_elements(*locator):
                 if element.is_displayed() and element.is_enabled():
@@ -216,16 +239,21 @@ def buscar_empresas(cidade: str, termo_busca: str, driver, max_results: int = 10
     search_box.send_keys(f"{termo_busca} em {cidade}")
     search_box.send_keys(Keys.ENTER)
     try:
-        feed = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"]')))
+        def feed_ready(browser):
+            _raise_if_intervention_required(browser)
+            feeds = browser.find_elements(By.CSS_SELECTOR, '[role="feed"]')
+            return feeds[0] if feeds else False
+        feed = wait.until(feed_ready)
     except TimeoutException:
         if driver.find_elements(By.XPATH, "//*[contains(., 'No results') or contains(., 'Nenhum resultado')]"):
             return []
         raise RuntimeError("Lista de resultados não apareceu; a interface pode ter mudado ou pedido intervenção.")
 
     businesses: list[Business] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, ...]] = set()
     stalled = 0
     while len(businesses) < max_results and stalled < MAX_SCROLL_STALLS:
+        _raise_if_intervention_required(driver)
         links = _result_links(feed)
         before_count = len(links)
         for link in links:
@@ -239,9 +267,9 @@ def buscar_empresas(cidade: str, termo_busca: str, driver, max_results: int = 10
             business = extrair_empresa(card, cidade, termo_busca)
             if business is None:
                 continue
-            key = (_normalizar(business.name), _normalizar(business.address), _normalizar(business.city))
-            if key not in seen:
-                seen.add(key)
+            keys = _dedupe_keys(business)
+            if not any(key in seen for key in keys):
+                seen.update(keys)
                 businesses.append(business)
                 if len(businesses) >= max_results:
                     break
@@ -265,7 +293,9 @@ def buscar_empresas(cidade: str, termo_busca: str, driver, max_results: int = 10
                 )
             except TimeoutException:
                 break
-    return [enriquecer_empresa(driver, business) for business in businesses]
+    if not businesses and (driver.find_elements(By.CSS_SELECTOR, '[role="article"]') or _result_links(feed)):
+        raise RuntimeError('Há cartões na página, mas nenhum resultado legível; os seletores podem ter mudado.')
+    return deduplicar_empresas(enriquecer_empresa(driver, business) for business in businesses)
 
 
 def coletar_buscas(driver, cidades: Iterable[str], termos: Iterable[str], max_results: int) -> list[Business]:
@@ -287,7 +317,7 @@ def coletar_buscas(driver, cidades: Iterable[str], termos: Iterable[str], max_re
 
 
 def _excel_safe(value: str) -> str:
-    value = value or ""
+    value = ILLEGAL_CHARACTERS_RE.sub('', value or '')
     if re.match(r"^[\s\u0000-\u001f]*[=+@-]", value):
         return "'" + value
     return value
