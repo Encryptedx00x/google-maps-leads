@@ -20,3 +20,5 @@ Em 2026-11-05, o usuário orientou manter a PoC baseada no Google Maps e não tr
 - O artefato de teste foi local a `work/maps-probe.xlsx` e não será commitado.
 
 Status: **FUNCIONAL E VALIDADO** como PoC de UI no escopo escolhido pelo usuário. A interface do site pode mudar e os resultados de uma consulta não garantem cobertura ou precisão futuras.
+
+PR: https://github.com/Encryptedx00x/google-maps-leads/pull/1 (rascunho aberto e mergeável). Head: d83a570f247d5117aa9a62d177a10bf26b9ac839.
