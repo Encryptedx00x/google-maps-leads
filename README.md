@@ -1,22 +1,53 @@
-# Google Maps Leads (recuperação pendente)
+# Prospecção local com Google Maps (PoC)
 
-Este repositório contém um protótipo antigo de Selenium que pesquisa no Google Maps, copia listagens de empresas e as grava em Excel. **Não execute o coletor atual.** A coleta/exportação pretendida não foi validada como compatível com os termos atuais do serviço.
+Protótipo Python/Selenium que pesquisa pequenos lotes de estabelecimentos por termo e cidade no Google Maps e grava os campos visíveis em XLSX. O escopo continua sendo pesquisa manual e volume baixo; não tenta contornar CAPTCHA, autenticação, limites ou bloqueios do site.
 
-## Estado da coleta
+## Requisitos
 
-Os [termos adicionais do Google Maps](https://www.google.com/help/terms_maps/) proíbem copiar conteúdo e criar downloads em massa. Os [termos do Google Maps Platform](https://cloud.google.com/maps-platform/terms) também proíbem scraping e copiar/salvar nomes e endereços de empresas fora dos serviços. Uma API oficial não autoriza automaticamente exportar esses dados para uma planilha.
+- Python 3.10 ou superior (validado com Python 3.13.14 no Windows).
+- Google Chrome instalado.
+- Dependências bloqueadas em `requirements-lock.txt`.
 
-Para retomar o projeto, substitua a origem por um provedor ou conjunto de dados cuja licença permita expressamente a extração e a exportação pretendidas. Até lá, a busca real está pendente. Nenhuma consulta ao Google Maps foi executada nesta recuperação.
+## Instalação no Windows
 
-## Estado técnico conhecido
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-lock.txt
+```
 
-- O script usa seletores internos sujeitos a mudanças e não implementa rolagem/paginação confiável.
-- A execução começa durante a importação do arquivo Python, abrindo prompts e inicializando o navegador.
-- A saída XLSX ainda não foi validada quanto a duplicatas, conteúdo interpretado como fórmula ou abertura em leitores de planilha.
-- As dependências não têm lockfile nem testes automatizados.
+Selenium Manager resolve o driver compatível com o Chrome quando o navegador inicia pela primeira vez. Não é necessário instalar ChromeDriver manualmente nem usar `webdriver-manager`.
 
-Esses pontos deverão ser tratados após a escolha de uma origem de dados permitida. Não foi feita atualização de Selenium nem ajustes nos seletores porque isso operacionalizaria a extração de listagens do Maps.
+## Executar uma busca pequena
 
-## Uso responsável
+```powershell
+python scraper_google_maps.py `
+  --cities Navegantes `
+  --terms padaria `
+  --max-results 5 `
+  --output output\padarias.xlsx `
+  --headless
+```
 
-Use apenas fontes e dados que você tenha autorização para coletar e exportar. Dados disponíveis publicamente não estão automaticamente liberados para cópia ou criação de listas. Respeite os termos do provedor, a legislação de proteção de dados (LGPD) e não utilize dados para spam ou finalidade abusiva.
+`--cities` e `--terms` aceitam listas separadas por vírgulas. `--max-results` é um limite global por execução, de 1 a 50. Se o arquivo de saída já existir, o programa escolhe um nome com sufixo numérico; use `--overwrite` para substituir deliberadamente. Sem argumentos, usa termos e cidades de exemplo definidos no script.
+
+O navegador aguarda a caixa de pesquisa e o painel de resultados por condições explícitas. A lista rola até atingir o limite ou deixar de carregar novos cartões. Os resultados são deduplicados por nome/endereço/cidade. Tipo, endereço e telefone ficam em branco quando a interface não expõe um rótulo reconhecível. Dados iniciados por caracteres que planilhas tratam como fórmula são gravados como texto.
+
+## Validação real desta revisão
+
+Em 2026-11-05 foi executada uma busca pequena em `padaria` / `Navegantes`, com limite de 3 resultados, no Chrome headless. O XLSX abriu corretamente e continha 3 empresas únicas; nome, telefone, categoria, endereço, cidade, termo e link estavam preenchidos nos três registros. Essa execução comprova apenas essa consulta e os rótulos presentes naquele momento.
+## Testes locais
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Os testes usam cartões sintéticos e não navegam até o Google Maps. Uma busca real pequena depende da disponibilidade da interface e da rede; se a página solicitar intervenção humana, o programa encerra sem tentar contorná-la.
+
+## Limitações da PoC
+
+- A interface interna do Maps pode mudar; seletores e rótulos acessíveis podem deixar de corresponder.
+- Os campos disponíveis variam entre estabelecimentos e resultados.
+- O protótipo lê resultados visíveis do site e não oferece garantia de cobertura, precisão ou estabilidade.
+- Os termos de uso do provedor podem restringir extração, armazenamento e exportação. Este projeto não representa uma integração oficial nem uma avaliação de conformidade; revise as condições aplicáveis ao seu uso antes de operar.
+- Não grave arquivos de resultados no Git. `.xlsx` está ignorado pelo repositório.
