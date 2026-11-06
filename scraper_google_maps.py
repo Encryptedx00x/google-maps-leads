@@ -1,145 +1,395 @@
+"""Small Selenium PoC for manually initiated Google Maps searches."""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import unicodedata
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Iterable
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import pandas as pd
-import re
-import os
+from selenium.webdriver.support.ui import WebDriverWait
 
-# Função para iniciar o navegador
-def iniciar_navegador():
+DEFAULT_TERMS = (
+    "Transportadora", "CD", "Centro de Distribuição", "Logística", "Galpão",
+    "Transportes", "Importação", "Exportação", "Armazéns gerais", "Distribuidora",
+)
+DEFAULT_CITIES = ("Navegantes", "Itajaí", "Blumenau")
+MAX_RESULTS = 50
+MAX_SCROLL_STALLS = 3
+
+
+@dataclass(frozen=True)
+class Business:
+    name: str
+    phone: str
+    business_type: str
+    address: str
+    city: str
+    search_term: str
+    maps_url: str
+
+
+def iniciar_navegador(headless: bool = False) -> webdriver.Chrome:
+    """Create Chrome using Selenium Manager; no separate driver download is needed."""
     options = webdriver.ChromeOptions()
-    # options.add_argument("--headless")  # Se quiser rodar invisível, descomente esta linha
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    return driver
+    options.add_argument("--window-size=1280,1000")
+    options.add_argument("--lang=pt-BR")
+    options.add_argument("--disable-notifications")
+    if headless:
+        options.add_argument("--headless=new")
+    return webdriver.Chrome(options=options)
 
-# Função para limpar e formatar o telefone
-def formatar_telefone(telefone):
-    telefone_limpo = re.sub(r'\D', '', telefone)
-    if len(telefone_limpo) == 10:  # Exemplo para telefones com DDD
-        return f"({telefone_limpo[:2]}) {telefone_limpo[2:6]}-{telefone_limpo[6:]}"
-    elif len(telefone_limpo) == 11:  # Exemplo para celulares com DDD
-        return f"({telefone_limpo[:2]}) {telefone_limpo[2:7]}-{telefone_limpo[7:]}"
-    return telefone_limpo  # Retorna o número limpo se não corresponder aos padrões
 
-# Função para buscar empresas
-def buscar_empresas(cidade, termo_busca, driver):
-    url = "https://www.google.com/maps"
-    driver.get(url)
+def formatar_telefone(telefone: str) -> str:
+    original = (telefone or "").strip()
+    digits = re.sub(r"\D", "", original)
+    if digits.startswith("55") and len(digits) in (12, 13):
+        digits = digits[2:]
+    if len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    if len(digits) == 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    return original
 
-    # Localiza a barra de pesquisa e faz a busca
-    search_box = driver.find_element(By.ID, "searchboxinput")
+
+def _normalizar(texto: str) -> str:
+    folded = unicodedata.normalize("NFKD", (texto or "").casefold())
+    return " ".join("".join(c for c in folded if not unicodedata.combining(c)).split())
+
+
+def _label_value(labels: Iterable[str], prefixes: tuple[str, ...]) -> str:
+    for label in labels:
+        normalized = _normalizar(label)
+        for prefix in prefixes:
+            if normalized.startswith(_normalizar(prefix)):
+                return label.split(":", 1)[-1].strip()
+    return ""
+
+
+def _element_text(driver, selectors: tuple[str, ...]) -> str:
+    for selector in selectors:
+        for element in driver.find_elements(By.CSS_SELECTOR, selector):
+            value = (element.get_attribute("aria-label") or element.text or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _raise_if_intervention_required(driver) -> None:
+    body = ' '.join(element.text for element in driver.find_elements(By.TAG_NAME, 'body'))
+    current_url = getattr(driver, 'current_url', '') or ''
+    if '/sorry/' in current_url or driver.find_elements(By.CSS_SELECTOR, '#captcha-form, form[action*="/sorry/"]') or re.search(
+        r'our systems have detected unusual traffic|unusual traffic from your computer|automated queries|tráfego incomum|prove que você é humano', body, re.IGNORECASE
+    ):
+        raise RuntimeError('O Maps pediu intervenção humana; a PoC encerrou sem tentar contornar o bloqueio.')
+
+
+def enriquecer_empresa(driver, business: Business, timeout: int = 10) -> Business:
+    """Read public labels from a result's Maps details panel/page, without interacting with controls."""
+    driver.get(business.maps_url)
+    try:
+        def ready(browser):
+            _raise_if_intervention_required(browser)
+            return browser.find_elements(By.CSS_SELECTOR, 'h1')
+        WebDriverWait(driver, timeout).until(
+            ready
+        )
+    except TimeoutException:
+        _raise_if_intervention_required(driver)
+        return business
+
+    labels = [
+        element.get_attribute("aria-label") or ""
+        for element in driver.find_elements(By.CSS_SELECTOR, "[aria-label]")
+    ]
+    name = _element_text(driver, ("h1",)) or business.name
+    address = (
+        _label_value(labels, ("Address:", "Endereço:"))
+        or _element_text(driver, ('[data-item-id="address"]',))
+        or business.address
+    )
+    phone = (
+        _label_value(labels, ("Phone:", "Telefone:"))
+        or _element_text(driver, ('[data-item-id^="phone"]',))
+        or business.phone
+    )
+    business_type = (
+        _label_value(labels, ("Category:", "Categoria:", "Business type:", "Tipo:"))
+        or _element_text(driver, ('button[jsaction*="pane.rating.category"]',))
+        or _element_text(driver, (".DkEaL",))
+        or business.business_type
+    )
+    return replace(
+        business,
+        name=name,
+        phone=formatar_telefone(phone),
+        business_type=business_type,
+        address=address,
+    )
+
+
+def extrair_empresa(card, cidade: str, termo_busca: str) -> Business | None:
+    """Read one visible Maps result card using accessibility labels where available."""
+    try:
+        links = card.find_elements(By.CSS_SELECTOR, 'a[href*="/maps/place/"]')
+    except (AttributeError, WebDriverException):
+        links = []
+    link = links[0] if links else card
+    try:
+        maps_url = (link.get_attribute("href") or "").strip()
+        link_label = (link.get_attribute("aria-label") or "").strip()
+        card_text = (card.text or "").strip()
+        aria_elements = card.find_elements(By.CSS_SELECTOR, "[aria-label]")
+        labels = [element.get_attribute("aria-label") or "" for element in aria_elements]
+    except (AttributeError, WebDriverException):
+        maps_url, link_label, card_text, labels = "", "", "", []
+
+    name = link_label or next((line.strip() for line in card_text.splitlines() if line.strip()), "")
+    if not name or not maps_url:
+        return None
+
+    phone = _label_value(labels, ("Phone:", "Telefone:"))
+    if not phone:
+        match = re.search(r"(?<!\d)(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[\s-]?\d{4}(?!\d)", card_text)
+        phone = match.group(0) if match else ""
+    phone = formatar_telefone(phone)
+
+    business_type = _label_value(labels, ("Category:", "Categoria:", "Business type:", "Tipo:"))
+    address = _label_value(labels, ("Address:", "Endereço:"))
+    return Business(
+        name=name,
+        phone=phone,
+        business_type=business_type,
+        address=address,
+        city=cidade.strip(),
+        search_term=termo_busca.strip(),
+        maps_url=maps_url,
+    )
+
+
+def _dedupe_keys(business: Business) -> list[tuple[str, ...]]:
+    parsed = urlparse(business.maps_url.strip())
+    tracking = {'entry', 'g_ep', 'g_st', 'hl', 'authuser'}
+    query = urlencode(sorted((k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k not in tracking and not k.startswith('utm_')))
+    canonical = urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip('/'), parsed.params, query, ''))
+    keys = [('url', canonical)] if canonical else []
+    if _normalizar(business.address):
+        keys.append(('address', _normalizar(business.name), _normalizar(business.address), _normalizar(business.city)))
+    return keys
+
+
+def deduplicar_empresas(empresas: Iterable[Business]) -> list[Business]:
+    unique: list[Business] = []
+    seen: set[tuple[str, ...]] = set()
+    for business in empresas:
+        keys = _dedupe_keys(business)
+        if any(key in seen for key in keys):
+            continue
+        seen.update(keys)
+        unique.append(business)
+    return unique
+
+
+def _result_links(feed):
+    try:
+        return feed.find_elements(By.CSS_SELECTOR, 'a[href*="/maps/place/"]')
+    except StaleElementReferenceException:
+        return []
+
+
+def encontrar_caixa_pesquisa(driver, wait: WebDriverWait):
+    """Prefer the current accessible combobox, with the older Maps ID as fallback."""
+    locators = (
+        (By.CSS_SELECTOR, 'input[role="combobox"]'),
+        (By.ID, "searchboxinput"),
+    )
+
+    def visible_input(browser):
+        _raise_if_intervention_required(browser)
+        for locator in locators:
+            for element in browser.find_elements(*locator):
+                if element.is_displayed() and element.is_enabled():
+                    return element
+        return False
+
+    return wait.until(visible_input)
+
+
+def buscar_empresas(cidade: str, termo_busca: str, driver, max_results: int = 10) -> list[Business]:
+    if not cidade.strip() or not termo_busca.strip():
+        raise ValueError("Cidade e termo de busca são obrigatórios.")
+    if not 1 <= max_results <= MAX_RESULTS:
+        raise ValueError(f"max_results deve estar entre 1 e {MAX_RESULTS}.")
+
+    driver.get("https://www.google.com/maps")
+    wait = WebDriverWait(driver, 20)
+    search_box = encontrar_caixa_pesquisa(driver, wait)
     search_box.clear()
     search_box.send_keys(f"{termo_busca} em {cidade}")
     search_box.send_keys(Keys.ENTER)
+    try:
+        def feed_ready(browser):
+            _raise_if_intervention_required(browser)
+            feeds = browser.find_elements(By.CSS_SELECTOR, '[role="feed"]')
+            return feeds[0] if feeds else False
+        feed = wait.until(feed_ready)
+    except TimeoutException:
+        if driver.find_elements(By.XPATH, "//*[contains(., 'No results') or contains(., 'Nenhum resultado')]"):
+            return []
+        raise RuntimeError("Lista de resultados não apareceu; a interface pode ter mudado ou pedido intervenção.")
 
-    # Aguarda a página carregar resultados
-    WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CLASS_NAME, "Nv2PK")))
+    businesses: list[Business] = []
+    seen: set[tuple[str, ...]] = set()
+    stalled = 0
+    while len(businesses) < max_results and stalled < MAX_SCROLL_STALLS:
+        _raise_if_intervention_required(driver)
+        links = _result_links(feed)
+        before_count = len(links)
+        for link in links:
+            try:
+                card = link.find_element(By.XPATH, './ancestor::*[@role="article"][1]')
+            except (NoSuchElementException, WebDriverException):
+                try:
+                    card = link.find_element(By.XPATH, "./..").find_element(By.XPATH, "./..")
+                except WebDriverException:
+                    card = link
+            business = extrair_empresa(card, cidade, termo_busca)
+            if business is None:
+                continue
+            keys = _dedupe_keys(business)
+            if not any(key in seen for key in keys):
+                seen.update(keys)
+                businesses.append(business)
+                if len(businesses) >= max_results:
+                    break
+        if len(businesses) >= max_results:
+            break
 
-    empresas = []
-
-    # Coleta os resultados
-    resultados = driver.find_elements(By.CLASS_NAME, "Nv2PK")
-    for resultado in resultados:
         try:
-            nome = resultado.find_element(By.CLASS_NAME, "qBF1Pd").text
-            
-            # Tenta capturar o telefone
-            telefone = "Telefone não encontrado"
+            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", feed)
+            WebDriverWait(driver, 2).until(lambda _driver: len(_result_links(feed)) > before_count)
+            stalled = 0
+        except TimeoutException:
+            stalled += 1
             try:
-                info_element = resultado.find_elements(By.XPATH, ".//span[contains(@class, 'UsdlK')]")
-                for info in info_element:
-                    texto_info = info.text
-                    if re.search(r'\(?\d{2,3}\)?\s?\d{4,5}-?\d{4}', texto_info):
-                        telefone = texto_info
-                        break  # Para no primeiro telefone encontrado
-            except Exception as e:
-                print(f"Erro ao encontrar telefone: {e}")
-
-            telefone_formatado = formatar_telefone(telefone)  # Formata o telefone
-
-            # Captura tipo de empresa e endereço
-            tipo_empresa = "Tipo não encontrado"
-            endereco = "Endereço não encontrado"
+                feed = driver.find_element(By.CSS_SELECTOR, '[role="feed"]')
+            except WebDriverException:
+                break
+        except StaleElementReferenceException:
             try:
-                # Busca informações de tipo de empresa e endereço
-                info_empresa = resultado.find_elements(By.XPATH, ".//div[contains(@class, 'W4Efsd') and not(./span[contains(@class, 'UY7F9')])]")
+                feed = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"]'))
+                )
+            except TimeoutException:
+                break
+    if not businesses and (driver.find_elements(By.CSS_SELECTOR, '[role="article"]') or _result_links(feed)):
+        raise RuntimeError('Há cartões na página, mas nenhum resultado legível; os seletores podem ter mudado.')
+    return deduplicar_empresas(enriquecer_empresa(driver, business) for business in businesses)
 
-                if len(info_empresa) >= 2:  # Verifica se há pelo menos 2 elementos
-                    tipo_empresa = info_empresa[0].text.strip()  # Primeiro elemento
-                    endereco = info_empresa[1].text.strip()  # Segundo elemento
-            except Exception as e:
-                print(f"Erro ao encontrar tipo de empresa e endereço: {e}")
 
-            empresas.append({
-                "Nome": nome,
-                "Telefone": telefone_formatado,
-                "Tipo de Empresa": tipo_empresa,
-                "Endereço": endereco,
-                "Cidade": cidade
-            })
-        except Exception as e:
-            print(f"Erro ao coletar dados: {e}")  # Exibe erro no console
-            continue  # Ignora se não encontrar telefone ou nome
+def coletar_buscas(driver, cidades: Iterable[str], termos: Iterable[str], max_results: int) -> list[Business]:
+    cities = [value.strip() for value in cidades if value.strip()]
+    keywords = [value.strip() for value in termos if value.strip()]
+    if not cities or not keywords:
+        raise ValueError("Informe ao menos uma cidade e um termo de busca.")
+    if not 1 <= max_results <= MAX_RESULTS:
+        raise ValueError(f"max_results deve estar entre 1 e {MAX_RESULTS}.")
+    businesses: list[Business] = []
+    for term in keywords:
+        for city in cities:
+            businesses = deduplicar_empresas(businesses)
+            remaining = max_results - len(businesses)
+            if remaining <= 0:
+                return businesses[:max_results]
+            businesses.extend(buscar_empresas(city, term, driver, max_results=remaining))
+    return deduplicar_empresas(businesses)[:max_results]
 
-    return empresas
 
-# Função para gerar um nome de arquivo único
-def gerar_nome_arquivo(base_nome):
-    contador = 1
-    nome_arquivo = f"{base_nome}.xlsx"
-    while os.path.exists(nome_arquivo):
-        nome_arquivo = f"{base_nome}_{contador}.xlsx"
-        contador += 1
-    return nome_arquivo
+def _excel_safe(value: str) -> str:
+    value = ILLEGAL_CHARACTERS_RE.sub('', value or '')
+    if re.match(r"^[\s\u0000-\u001f]*[=+@-]", value):
+        return "'" + value
+    return value
 
-# Função para obter cidades e palavras-chave do usuário
-def obter_opcoes_usuario(cidades_padrao, termos_padrao):
-    # Pergunta sobre as cidades
-    cidades_usuario = input(f"Você deseja usar as cidades padrão {cidades_padrao}? (s/n): ").strip().lower()
-    if cidades_usuario == 'n':
-        cidades = input("Digite as cidades separadas por vírgula: ").split(',')
-        cidades = [cidade.strip() for cidade in cidades]
-    else:
-        cidades = cidades_padrao
 
-    # Pergunta sobre os termos de busca
-    termos_usuario = input(f"Você deseja usar os termos padrão {termos_padrao}? (s/n): ").strip().lower()
-    if termos_usuario == 'n':
-        termos = input("Digite os termos de busca separados por vírgula: ").split(',')
-        termos = [termo.strip() for termo in termos]
-    else:
-        termos = termos_padrao
+def exportar_excel(empresas: Iterable[Business], caminho: Path) -> int:
+    rows = list(empresas)
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Empresas"
+    headers = ("Nome", "Telefone", "Tipo de empresa", "Endereço", "Cidade", "Termo", "Google Maps")
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+    for business in rows:
+        sheet.append(tuple(_excel_safe(value) for value in (
+            business.name, business.phone, business.business_type, business.address,
+            business.city, business.search_term, business.maps_url,
+        )))
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column, width in {"A": 36, "B": 20, "C": 28, "D": 42, "E": 20, "F": 28, "G": 64}.items():
+        sheet.column_dimensions[column].width = width
+    workbook.save(caminho)
+    return len(rows)
 
-    return cidades, termos
 
-# Termos de busca e cidades
-termos_busca_padrao = ["Transportadora", "CD", "Centro de Distribuição", "Logística", "Galpão", "Transportes", "Importação", "Exportação", "Express", "Armazéns gerais", "Distribuidora", "Armazenagem"]
-cidades_padrao = ["Navegantes", "Itajaí", "Blumenau"]
+def caminho_saida_unico(caminho: Path, overwrite: bool = False) -> Path:
+    if overwrite or not caminho.exists():
+        return caminho
+    for index in range(1, 10000):
+        candidate = caminho.with_name(f"{caminho.stem}_{index}{caminho.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Não foi possível gerar um nome de arquivo exclusivo.")
 
-# Obtém as opções do usuário
-cidades, termos_busca = obter_opcoes_usuario(cidades_padrao, termos_busca_padrao)
 
-# Inicia o navegador
-driver = iniciar_navegador()
-todas_empresas = []
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="PoC Selenium para busca pequena no Google Maps.")
+    parser.add_argument("--cities", default=",".join(DEFAULT_CITIES), help="Cidades separadas por vírgula.")
+    parser.add_argument("--terms", default=",".join(DEFAULT_TERMS), help="Termos separados por vírgula.")
+    parser.add_argument("--max-results", type=int, default=10, help=f"Limite global (1–{MAX_RESULTS}).")
+    parser.add_argument("--output", type=Path, default=Path("empresas_logistica.xlsx"))
+    parser.add_argument("--overwrite", action="store_true", help="Permite sobrescrever --output.")
+    parser.add_argument("--headless", action="store_true", help="Executa Chrome sem janela.")
+    return parser
 
-# Realiza buscas para cada termo e cidade
-for termo in termos_busca:
-    for cidade in cidades:
-        empresas_encontradas = buscar_empresas(cidade, termo, driver)
-        todas_empresas.extend(empresas_encontradas)
 
-driver.quit()  # Fecha o navegador
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    driver = None
+    try:
+        output = caminho_saida_unico(args.output, overwrite=args.overwrite)
+        driver = iniciar_navegador(headless=args.headless)
+        businesses = coletar_buscas(
+            driver,
+            args.cities.split(","),
+            args.terms.split(","),
+            max_results=args.max_results,
+        )
+        count = exportar_excel(businesses, output)
+        print(f"{count} resultados únicos salvos em {output}")
+        return 0
+    except (ValueError, RuntimeError, OSError, WebDriverException) as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if driver is not None:
+            driver.quit()
 
-# Salva os resultados em um arquivo Excel
-nome_arquivo = gerar_nome_arquivo("empresas_logistica")
-df = pd.DataFrame(todas_empresas)
-df.to_excel(nome_arquivo, index=False)
 
-print(f"Busca concluída. Resultados salvos em '{nome_arquivo}'.")
+if __name__ == "__main__":
+    raise SystemExit(main())

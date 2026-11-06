@@ -1,42 +1,62 @@
-# Prospecção automática no Google Maps
+# Prospecção local com Google Maps (PoC)
 
-Ferramenta em Python que automatiza a busca de estabelecimentos no Google Maps a partir de
-palavras-chave e cidades, e exporta os resultados (nome, telefone, tipo e endereço) para uma
-planilha Excel. Útil para montar listas de prospecção comercial a partir de dados públicos.
-
-## Como funciona
-
-1. Abre o Google Maps no navegador (Selenium + Chrome).
-2. Para cada combinação de **palavra-chave × cidade**, pesquisa e lê os resultados visíveis.
-3. Extrai nome, telefone (quando exibido), tipo de estabelecimento e endereço.
-4. Salva tudo em um arquivo `.xlsx` com nome único.
+Protótipo Python/Selenium que pesquisa pequenos lotes de estabelecimentos por termo e cidade no Google Maps e grava os campos visíveis em XLSX. O escopo continua sendo pesquisa manual e volume baixo; não tenta contornar CAPTCHA, autenticação, limites ou bloqueios do site.
 
 ## Requisitos
 
-- Python 3.10+
-- Google Chrome instalado
-- Dependências: `pip install -r requirements.txt`
-  (o driver do Chrome é baixado automaticamente pelo `webdriver-manager`)
+- Python 3.10 ou superior (validado com Python 3.13.14 no Windows).
+- Google Chrome instalado.
+- Dependências bloqueadas em `requirements-lock.txt`.
 
-## Como usar
+## Instalação no Windows
 
-```bash
-python scraper_google_maps.py
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-lock.txt
 ```
 
-O script pergunta se você quer usar as **cidades** e as **palavras-chave** padrão (exemplo do
-ramo de logística em Santa Catarina) ou digitar as suas, separadas por vírgula. Para mudar os
-padrões, edite as listas `termos_busca_padrao` e `cidades_padrao` no fim do arquivo.
+Selenium Manager resolve o driver compatível com o Chrome quando o navegador inicia pela primeira vez. Não é necessário instalar ChromeDriver manualmente nem usar `webdriver-manager`.
 
-## Limitações conhecidas
+## Executar uma busca pequena
 
-- Lê apenas os primeiros resultados carregados de cada busca (não rola a lista automaticamente).
-- Depende dos nomes internos de classe do Google Maps, que mudam com frequência e podem exigir ajuste nos seletores.
-- É uma ferramenta de automação de navegador, não a API oficial do Google.
+```powershell
+python scraper_google_maps.py `
+  --cities Navegantes `
+  --terms padaria `
+  --max-results 5 `
+  --output output\padarias.xlsx `
+  --headless
+```
 
-## Uso responsável
+`--cities` e `--terms` aceitam listas separadas por vírgulas. `--max-results` é um limite global por execução, de 1 a 50. Se o arquivo de saída já existir, o programa escolhe um nome com sufixo numérico; use `--overwrite` para substituir deliberadamente. Sem argumentos, usa termos e cidades de exemplo definidos no script.
 
-Use apenas para fins legítimos de prospecção, respeitando os
-[Termos de Serviço do Google](https://policies.google.com/terms) e a legislação de proteção de
-dados (LGPD). Os dados coletados são públicos; trate-os com responsabilidade e não os utilize
-para spam ou qualquer finalidade abusiva.
+O navegador aguarda a caixa de pesquisa e o painel de resultados por condições explícitas. A lista rola até atingir o limite ou deixar de carregar novos cartões. A deduplicação usa a URL do lugar e, quando disponível, nome/endereço/cidade; filiais sem endereço não são fundidas apenas pelo nome. Tipo, endereço e telefone ficam em branco quando a interface não expõe um rótulo reconhecível. Caracteres de controle inválidos são removidos do XLSX e valores que poderiam virar fórmula são gravados como texto.
+
+## Validação real desta revisão
+
+Em 2026-11-05 foi executada uma busca pequena em `padaria` / `Navegantes`, com limite de 3 resultados, no Chrome headless. O XLSX abriu corretamente e continha 3 empresas únicas; nome, telefone, categoria, endereço, cidade, termo e link estavam preenchidos nos três registros. Essa execução comprova apenas essa consulta e os rótulos presentes naquele momento.
+## Testes locais
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Os testes usam cartões sintéticos e não navegam até o Google Maps. Uma busca real pequena depende da disponibilidade da interface e da rede; se a página solicitar intervenção humana, o programa encerra sem tentar contorná-la.
+
+Para validar seletores, rolagem e exportação com Chrome real somente contra uma fixture localhost:
+
+```powershell
+$env:MAPS_BROWSER_FIXTURE = '1'
+python -m unittest discover -s tests -p test_browser_fixture.py -v
+```
+
+A auditoria final verificou 15 testes locais e essa integração Chrome. Não repetiu a coleta real nem homologa seletores atuais do site. Evidências em `docs/recovery/03-final-audit.md`.
+
+## Limitações da PoC
+
+- A interface interna do Maps pode mudar; seletores e rótulos acessíveis podem deixar de corresponder.
+- Os campos disponíveis variam entre estabelecimentos e resultados.
+- O protótipo lê resultados visíveis do site e não oferece garantia de cobertura, precisão ou estabilidade.
+- Os [termos adicionais do Maps](https://www.google.com/help/terms_maps/) restringem cópia de conteúdo, salvo permissões/exceções aplicáveis, e downloads em massa. Não foi demonstrada uma permissão específica para a extração/exportação desta PoC. A auditoria técnica não declara conformidade nem autoriza uso comercial da fonte.
+- Não grave arquivos de resultados no Git. `.xlsx` está ignorado pelo repositório.
