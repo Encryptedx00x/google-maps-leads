@@ -24,3 +24,7 @@ Comparado com `origin/master`; commit de recuperação `8ceb71b` preservado.
 [Termos adicionais do Maps](https://www.google.com/help/terms_maps/), consultados em 2026-11-05: seção 2 restringe copiar conteúdo salvo permissões/exceções e downloads em massa. A ausência de bypass não demonstra autorização para copiar/exportar listagens. Não foi demonstrada permissão específica para esta finalidade.
 
 **GO técnico para merge como PoC**, seguindo a direção de manter o projeto. **Sem GO de conformidade para operação de coleta/exportação**: essa ressalva permanece explícita no README e PR. A fixture não garante estabilidade dos seletores ao vivo. Nenhum CAPTCHA, bloqueio ou autenticação foi contornado. PR permanece draft para decisão do proprietário.
+
+## Preparação para integração
+
+O CI executa os testes locais sem acessar o Maps; a fixture opcional com Chrome não é executada no CI. Seletores atuais e conformidade de coleta/exportação não são homologados por esse CI.
